@@ -12,7 +12,7 @@ static_key_iv_array = [(randbytes(32), randbytes(16)) for i in range(0, 5)]
 
 
 class TestCipher:
-    range_params = (1, 10000, 1000)
+    range_params = (1, 50000, 2000)
 
     @classmethod
     def get_cipher(cls, static_key, iv, parameters=None, RSA_key=None, rsa_sinc: bool = True) -> CryptoCipher:
@@ -23,7 +23,7 @@ class TestCipher:
 
     @pytest.mark.parametrize("static_key, iv", static_key_iv_array)
     def test_RSA_encode_decode(self, static_key, iv):
-        crypto_cipher = self.get_cipher(static_key, iv)
+        crypto_cipher = self.get_cipher(static_key, iv, parameters=False)
         for i in range(*self.range_params):
             start_value = randbytes(i*8)
             encode = crypto_cipher.encodeRSA(start_value)
@@ -32,7 +32,7 @@ class TestCipher:
 
     @pytest.mark.parametrize("static_key, iv", static_key_iv_array)
     def test_AES_encode_decode(self, static_key, iv):
-        crypto_cipher = self.get_cipher(static_key, iv)
+        crypto_cipher = self.get_cipher(static_key, iv, parameters=False)
         for i in range(*self.range_params):
             start_value = randbytes(i*8)
             encode = crypto_cipher.encodeAES(start_value)
@@ -41,7 +41,7 @@ class TestCipher:
 
     @pytest.mark.parametrize("static_key, iv", static_key_iv_array)
     def test_RSApAES_encode_decode(self, static_key, iv):
-        crypto_cipher = self.get_cipher(static_key, iv)
+        crypto_cipher = self.get_cipher(static_key, iv, parameters=False)
         for i in range(*self.range_params):
             start_value = randbytes(i*8)
             encode = crypto_cipher.encodeRSApAES(start_value)
@@ -83,7 +83,7 @@ class TestCipher:
         crypto_cipher_A.DH_public_key = crypto_cipher_A.decodeRSApAES(m_3_2)
         assert crypto_cipher_A._key == crypto_cipher_B._key
         t_end_connect = time.time()
-        print(f"connect time: {t_end_connect-t_start_connect}")
+        print(f"\n\nconnect time: {t_end_connect-t_start_connect}\n" + "-"*50 + "\n")
         for i in range(*self.range_params):
             message = randbytes(i)
             e_message = crypto_cipher_A.encode(message)

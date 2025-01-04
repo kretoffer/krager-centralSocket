@@ -11,18 +11,16 @@ from .xor import xor_bytes
 
 
 class CryptoCipher:
-    def __init__(self, staticKey: bytes, iv: bytes, public_RSA_key: bytes | RSA.RsaKey | None = None,
-                 parameters: dh.DHParameters | bool = None):
+    def __init__(self, staticKey: bytes = None, iv: bytes = None, public_RSA_key: bytes | RSA.RsaKey | None = None, parameters: dh.DHParameters | bool = None):
         key = RSA.generate(2048)
         self.__my_private_RSA_key = RSA.importKey(key.export_key())
         self.__my_public_RSA_key = RSA.importKey(key.publickey().export_key())
-        self.__client_public_RSA_key = RSA.importKey(public_RSA_key) if public_RSA_key is bytes else public_RSA_key if public_RSA_key else None
-        self.__static_key = staticKey
+        self.__client_public_RSA_key = RSA.importKey(public_RSA_key) if public_RSA_key is bytes else public_RSA_key
+        self.static_key = staticKey
+        self.iv = iv
         self.__key = self.__static_key
-        self.__iv = iv
         if parameters is not False:
-            self.parameters = parameters if parameters else dh.generate_parameters(generator=2, key_size=2048,
-                                                                                   backend=default_backend())
+            self.parameters = parameters if parameters else dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
         self.DH_public_key = None
 
     def encodeRSA(self, message: str | dict | bytes) -> bytes:
@@ -58,13 +56,17 @@ class CryptoCipher:
         message = message if isinstance(message, bytes) else message.encode('utf-8')
         reminder = len(message) % 16
         if reminder != 0:
-            message += bytes(16 - reminder)
+            if message[-1] != 0:
+                message += bytes(16 - reminder)
+            else:
+                message += b'\xFF'*(16-reminder)
         cipher = AES.new(self.__key, AES.MODE_CBC, self.__iv)
         return cipher.encrypt(message)
 
     def decodeAES(self, message: bytes | bytearray | memoryview, key: bytes = None) -> bytes:
         decipher = AES.new(key if key else self.__key, AES.MODE_CBC, self.__iv)
-        return decipher.decrypt(message).rstrip(b'\x00')
+        m = decipher.decrypt(message)
+        return m.rstrip(b'\x00') if m[-1] == 0 else m.rstrip(b'\xFF')
 
     def encodeRSApAES(self, message: str | dict | bytes) -> bytes:
         encode_message_part = self.encodeAES(message)
@@ -81,6 +83,24 @@ class CryptoCipher:
 
     def decode(self, message: bytes | bytearray | memoryview, to_str: bool = False) -> bytes | str:
         return self.decodeAES(message).decode('utf-8') if to_str else self.decodeAES(message)
+
+    @classmethod
+    def parameters_to_bytes(cls, parameters: dh.DHParameters):
+        return parameters.parameter_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.ParameterFormat.PKCS3
+        )
+
+    @classmethod
+    def public_key_to_bytes(cls, key: dh.DHPublicKey):
+        return key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+
+    @classmethod
+    def RSA_key_from_bytes(cls, key: bytes) -> RSA.RsaKey:
+        return RSA.import_key(key)
 
     @classmethod
     def get_secret(cls, key: dh.DHPrivateKey, publicKey: dh.DHPublicKey):
@@ -121,8 +141,7 @@ class CryptoCipher:
             self.__DH_public_key = None
             return
         if isinstance(key, (dh.DHPublicKey, bytes)):
-            self.__DH_public_key = key if isinstance(key, dh.DHPublicKey) else serialization.load_pem_public_key(key,
-                                                                                                                 backend=default_backend())
+            self.__DH_public_key = key if isinstance(key, dh.DHPublicKey) else serialization.load_pem_public_key(key, backend=default_backend())
             self.__key = self.get_key(self.__static_key, self.get_secret(self.__DH_private_key, self.DH_public_key))
             self.__iv = xor_bytes(
                 self.__my_DH_public_key.public_bytes(
@@ -134,7 +153,7 @@ class CryptoCipher:
                     format=serialization.PublicFormat.SubjectPublicKeyInfo
                 )
             )[:16]
-            del self.__parameters, self.__client_public_RSA_key, self.__my_private_RSA_key, self.__my_public_RSA_key, \
+            del self.__parameters, self.__my_private_RSA_key, self.__my_public_RSA_key, \
                 self.__static_key, self.__DH_public_key
         else:
             raise TypeError(f"Сюда должно передаваться DsaKey, not {type(key)}")
@@ -153,11 +172,40 @@ class CryptoCipher:
         return self.__parameters
 
     @parameters.setter
-    def parameters(self, parameters):
+    def parameters(self, parameters: dh.DHParameters | bytes):
         if not isinstance(parameters, (dh.DHParameters, bytes)):
             raise TypeError(f"parameters can't be a {type(parameters)}")
-        self.__parameters = parameters if isinstance(parameters,
-                                                     dh.DHParameters) else serialization.load_pem_parameters(parameters,
-                                                                                                             backend=default_backend())
+        self.__parameters = parameters if isinstance(parameters, dh.DHParameters) else serialization.load_pem_parameters(parameters, backend=default_backend())
         self.__DH_private_key = self.parameters.generate_private_key()
         self.__my_DH_public_key = self.__DH_private_key.public_key()
+
+    @property
+    def static_key(self):
+        return self.__static_key
+
+    @static_key.setter
+    def static_key(self, key: bytes):
+        if key is None:
+            self.__static_key = None
+            return
+        if not isinstance(key, bytes):
+            raise TypeError("key can be only bytes")
+        if len(key) != 32:
+            raise ValueError("kay may be only 32 bytes length")
+        self.__static_key = key
+        self.__key = self.__static_key
+
+    @property
+    def iv(self):
+        return self.__static_key
+
+    @iv.setter
+    def iv(self, iv: bytes):
+        if iv is None:
+            self.__iv = None
+            return
+        if not isinstance(iv, bytes):
+            raise TypeError("iv can be only bytes")
+        if len(iv) != 16:
+            raise ValueError("iv may be only 16 bytes length")
+        self.__iv = iv
