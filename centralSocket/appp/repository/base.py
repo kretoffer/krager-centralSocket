@@ -5,21 +5,32 @@ import json
 
 from ..domain.singleton import Singleton
 
-
 kafka_ports = (9092,)
 defaultKafkaHosts = tuple([f'localhost:{port}' for port in kafka_ports])
 
 
-class BaseKafkaRepository(metaclass=Singleton):
+class Producer:
+    _instance = None
 
-    def __init__(self, hosts: list | tuple = defaultKafkaHosts, topic: str = "test"):
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = KafkaProducer(
+                bootstrap_servers=kwargs["bootstrap_servers"],
+                value_serializer=kwargs["value_serializer"]
+            )
+        return cls._instance
+
+
+class BaseKafkaRepository:
+
+    def __init__(self, hosts: list | tuple = defaultKafkaHosts, topic: str | None = None):
         self.hosts = hosts
         self.topic = topic
         self.producer = self.getProducer(self.hosts)
 
     @classmethod
     def getProducer(cls, hosts: list | tuple) -> KafkaProducer:
-        producer = KafkaProducer(
+        producer = Producer(
             bootstrap_servers=list(hosts),
             value_serializer=lambda x: json.dumps(x).encode('utf-8')
         )
@@ -29,13 +40,15 @@ class BaseKafkaRepository(metaclass=Singleton):
         if not isinstance(data, dict):
             raise TypeError(f"event data must be dict.\n{type(data)} doesn't fit")
         topic = topic if topic else self.topic
+        if not topic:
+            raise TypeError("topic can't be None")
         self.producer.send(topic, data, key)
 
     def __add__(self, other: dict | tuple[dict, Any, str]):
         if isinstance(other, dict):
             self.addEvent(other)
         elif isinstance(other, tuple):
-            self.addEvent(other[0], other[1], other[2])
+            self.addEvent(*other)
         return self
 
 
@@ -51,7 +64,7 @@ class BaseHttpRepository(ABC):
 
     def SendRequest(self, host: str | None = None):
         """Send request and return response"""
-        #TODO
+        # TODO
         host = host if host is not None else self.host
         return None
 
