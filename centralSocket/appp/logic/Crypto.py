@@ -6,16 +6,68 @@ from cryptography.hazmat.primitives.asymmetric import dh
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
+import struct
+
 import json
 from .xor import xor_bytes
 
 
+def int_to_bytes(num: int):
+    num_bytes = (num.bit_length() + 7) // 8
+    return num.to_bytes(num_bytes, byteorder='big')
+
+class DartCrypto:
+    @classmethod
+    def dart_bytes_to_public_RSA_key(cls, data:bytes) -> RSA.RsaKey:
+        modulus_length = struct.unpack('>I', data[:4])[0]
+        exponent_length = struct.unpack('>I', data[4:8])[0]
+
+        modulus = int.from_bytes(data[8:8 + modulus_length], byteorder='big')
+        exponent = int.from_bytes(data[8 + modulus_length:8 + modulus_length + exponent_length], byteorder='big')
+
+        return RSA.construct((modulus, exponent))
+
+    @classmethod
+    def RSA_key_to_dart_bytes(cls, key: RSA.RsaKey) -> bytes:
+        return key.export_key(format='DER')
+
+    @classmethod
+    def python_dh_parameters_to_dart_bytes(cls, parameters: dh.DHParameters) -> tuple[bytes, bytes]:
+        p = parameters.parameter_numbers().p
+        g = parameters.parameter_numbers().g
+
+        p_bytes = p.to_bytes((p.bit_length()+7) // 8, byteorder='big')
+        g_bytes = g.to_bytes((g.bit_length()+7) // 8, byteorder='big')
+
+        return p_bytes, g_bytes
+
+    @classmethod
+    def python_dh_public_key_to_dart_bytes(cls, key: dh.DHPublicKey) -> bytes:
+        y = key.public_numbers().y
+        return int_to_bytes(y)
+
+
+    @classmethod
+    def dart_bytes_to_python_dh_public_key(cls, public_key_bytes: bytes, parameters: dh.DHParameters) -> dh.DHPublicKey:
+        #a = base64.b64decode(public_key_bytes)
+        #return serialization.load_pem_public_key(a, backend=default_backend())
+        a = dh.DHPublicNumbers(
+            int.from_bytes(public_key_bytes, byteorder="big"),
+            parameters.parameter_numbers()
+        ).public_key(default_backend())
+        #return serialization.load_pem_public_key(public_key_bytes, backend=default_backend())
+        return a
+
+
 class CryptoCipher:
-    def __init__(self, staticKey: bytes = None, iv: bytes = None, public_RSA_key: bytes | RSA.RsaKey | None = None, parameters: dh.DHParameters | bool = None):
-        key = RSA.generate(2048)
+    def __init__(self, staticKey: bytes = None, iv: bytes = None, public_RSA_key: bytes | RSA.RsaKey | None = None, parameters: dh.DHParameters | bool = None, connect: str = "p", version: str = "0.0.1"):
+        self.connect_type = connect
+        self.version = version
+
+        key = RSA.generate(2048, e=65537)
         self.__my_private_RSA_key = RSA.importKey(key.export_key())
         self.__my_public_RSA_key = RSA.importKey(key.publickey().export_key())
-        self.__client_public_RSA_key = RSA.importKey(public_RSA_key) if public_RSA_key is bytes else public_RSA_key
+        self.__client_public_RSA_key = self.RSA_key_from_bytes(public_RSA_key, mode=self.connect_type) if public_RSA_key is bytes else public_RSA_key
         self.static_key = staticKey
         self.iv = iv
         self.__key = self.__static_key
@@ -29,7 +81,7 @@ class CryptoCipher:
         message = message if not isinstance(message, dict) else json.dumps(message)
         message = message if isinstance(message, bytes) else message.encode('utf-8')
         cipher = PKCS1_OAEP.new(self.client_public_RSA_key)
-        chunk_size = 210
+        chunk_size = 214
         if len(message) <= chunk_size:
             return cipher.encrypt(message)
         else:
@@ -55,11 +107,12 @@ class CryptoCipher:
         message = message if not isinstance(message, dict) else json.dumps(message)
         message = message if isinstance(message, bytes) else message.encode('utf-8')
         reminder = len(message) % 16
-        if reminder != 0:
+        if reminder != 0 or message[-1] in (0, 255):
             if message[-1] != 0:
                 message += bytes(16 - reminder)
             else:
                 message += b'\xFF'*(16-reminder)
+
         cipher = AES.new(self.__key, AES.MODE_CBC, self.__iv)
         return cipher.encrypt(message)
 
@@ -85,31 +138,44 @@ class CryptoCipher:
         return self.decodeAES(message).decode('utf-8') if to_str else self.decodeAES(message)
 
     @classmethod
-    def parameters_to_bytes(cls, parameters: dh.DHParameters):
-        return parameters.parameter_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.ParameterFormat.PKCS3
-        )
+    def parameters_to_bytes(cls, parameters: dh.DHParameters, mode: str):
+        match mode:
+            case "d": #p
+                return parameters.parameter_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.ParameterFormat.PKCS3
+                )
+            #case "d":
+            #    return DartCrypto.python_dh_parameters_to_dart_bytes(parameters)
 
     @classmethod
-    def public_key_to_bytes(cls, key: dh.DHPublicKey):
-        return key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
+    def public_key_to_bytes(cls, key: dh.DHPublicKey, mode: str):
+        match mode:
+            case "p":
+                return key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+            case "d":
+                return DartCrypto.python_dh_public_key_to_dart_bytes(key)
+
 
     @classmethod
-    def RSA_key_from_bytes(cls, key: bytes) -> RSA.RsaKey:
-        return RSA.import_key(key)
+    def RSA_key_from_bytes(cls, key: bytes, mode: str = "p") -> RSA.RsaKey:
+        match mode:
+            case "p":
+                return RSA.import_key(key)
+            case "d":
+                return DartCrypto.dart_bytes_to_public_RSA_key(key)
 
     @classmethod
-    def get_secret(cls, key: dh.DHPrivateKey, publicKey: dh.DHPublicKey):
-        return key.exchange(publicKey)
+    def get_secret(cls, key: dh.DHPrivateKey, publicKey: dh.DHPublicKey) -> bytes:
+        key = key.exchange(publicKey)
+        return key
 
     @classmethod
-    def get_key(cls, static_key: bytes, dynamic_key: bytes) -> bytes:
-        d_key = dynamic_key.lstrip(b'-----BEGIN PUBLIC KEY-----\n').rstrip(b'\n-----END PUBLIC KEY-----')
-        key = d_key[:int(len(d_key) / 2)] + static_key + d_key[:int(len(d_key) / 2):]
+    def get_key(cls, static_key: bytes, d_key: bytes) -> bytes:
+        key = d_key[:int(len(d_key) / 2)] + static_key + d_key[int(len(d_key) / 2):]
         key_hash = SHA256.new(key).digest()
         return key_hash
 
@@ -135,24 +201,27 @@ class CryptoCipher:
     def DH_public_key(self):
         return self.__DH_public_key
 
+    def get_dh_public_key(self, key):
+        if isinstance(key, dh.DHPublicKey):
+            return key
+        match self.connect_type:
+            case "p": return serialization.load_pem_public_key(key, backend=default_backend())
+            case "d": return DartCrypto.dart_bytes_to_python_dh_public_key(key, self.parameters)
+
     @DH_public_key.setter
     def DH_public_key(self, key: dh.DHPublicKey | bytes | None):
         if key is None:
             self.__DH_public_key = None
             return
         if isinstance(key, (dh.DHPublicKey, bytes)):
-            self.__DH_public_key = key if isinstance(key, dh.DHPublicKey) else serialization.load_pem_public_key(key, backend=default_backend())
+            self.__DH_public_key = self.get_dh_public_key(key)
             self.__key = self.get_key(self.__static_key, self.get_secret(self.__DH_private_key, self.DH_public_key))
+            t1 = self.__my_DH_public_key.public_numbers().y
+            t2 = self.__DH_public_key.public_numbers().y
             self.__iv = xor_bytes(
-                self.__my_DH_public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                ),
-                self.__DH_public_key.public_bytes(
-                    encoding=serialization.Encoding.PEM,
-                    format=serialization.PublicFormat.SubjectPublicKeyInfo
-                )
-            )[:16]
+                int_to_bytes(t1)[:16],
+                int_to_bytes(t2)[:16]
+            )
             del self.__parameters, self.__my_private_RSA_key, self.__my_public_RSA_key, \
                 self.__static_key, self.__DH_public_key
         else:
@@ -197,7 +266,7 @@ class CryptoCipher:
 
     @property
     def iv(self):
-        return self.__static_key
+        return self.__iv
 
     @iv.setter
     def iv(self, iv: bytes):
