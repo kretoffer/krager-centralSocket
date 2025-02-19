@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from appp import config
 
@@ -12,6 +13,9 @@ clients = {}
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    while config.enable_socket_listener:
+        data = await reader.read(1024)
+        print(data)
     client = Client(reader, writer)
     if await newClient.v(client):
         if client.data["userID"] not in clients:
