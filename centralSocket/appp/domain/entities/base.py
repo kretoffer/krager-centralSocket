@@ -38,23 +38,3 @@ class BaseEntity(ABC):
             self._events.clear()
 
         return registered_events
-
-    def __post_init__(self):
-        self._data = None
-        self._temp = None
-
-    @abstractmethod
-    def validateDataAccept(self, data) -> bool: ...
-
-    @property
-    def data(self):
-        return self._data
-
-    @data.setter
-    def data(self, data):
-        self.validateDataAccept(data)
-        self._data = data
-
-    @property
-    def temp(self):
-        return self._temp
